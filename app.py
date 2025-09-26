@@ -464,6 +464,13 @@ st.pyplot(fig, use_container_width=True)
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
 st.subheader("🎯 Single Player Role Profile")
 player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
+# --- canonical selected player (use everywhere) ---
+st.session_state.sel_player = player_name
+
+def sel_player():
+    # always read the one true selection
+    return st.session_state.get("sel_player", player_name)
+
 player_row = df_f[df_f["Player"] == player_name].head(1)
 
 # derive defaults from selected player (to propagate)
@@ -1468,18 +1475,28 @@ with st.expander("Radar settings", expanded=False):
         st.warning("Not enough players for this filter.")
         players = sorted(df["Player"].dropna().unique().tolist())
 
-    # default Player A = selected player if present
-    try:
-        pA_index = players.index(player_name)
-    except Exception:
-        pA_index = 0
-    pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
+# default Player A = selected player (read-only so it never desyncs)
+pA = sel_player()
+try:
+    pA_index = players.index(pA)
+except Exception:
+    pA_index = 0
 
-    # default Player B = next one (or index 1)
-    pB_default_index = 1 if len(players) > 1 else 0
-    if pA_index == pB_default_index and len(players) > 2:
-        pB_default_index = 2
-    pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
+st.selectbox(
+    "Player A (red)",
+    players,
+    index=(pA_index if pA in players else 0),
+    key="rad_a_view",
+    disabled=True,  # show, but don't let Radar change Player A
+)
+
+
+# default Player B = next one (or index 1)
+pB_default_index = 1 if len(players) > 1 else 0
+if pA_index == pB_default_index and len(players) > 2:
+    pB_default_index = 2
+pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
+
 
     DEFAULT_METRICS = [
     "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions", "Aerial duels won, %",
@@ -1712,8 +1729,10 @@ with st.expander("Similarity settings", expanded=False):
 
 # --- Similarity computation ---
 if not player_row.empty:
-    target_row_full = df[df['Player'] == player_name].head(1).iloc[0]
+    sp = sel_player()
+    target_row_full = df[df['Player'] == sp].head(1).iloc[0]
     target_league = target_row_full['League']
+
 
     df_candidates = df[df['League'].isin(sim_leagues)].copy()
 
@@ -1930,16 +1949,18 @@ else:
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
         target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-        try:
-            default_target_idx = target_options_cf.index(player_name)
-        except Exception:
-            default_target_idx = 0 if target_options_cf else 0
-        target_player_cf = st.selectbox(
-            "Target player",
-            target_options_cf,
-            index=default_target_idx if target_options_cf else 0,
-            key="cf_target_player"
-        )
+sp = sel_player()
+try:
+    default_target_idx = target_options_cf.index(sp)
+except Exception:
+    default_target_idx = 0 if target_options_cf else 0
+target_player_cf = st.selectbox(
+    "Target player",
+    target_options_cf,
+    index=default_target_idx if target_options_cf else 0,
+    key="cf_target_player"
+)
+
 
         # Minutes / age filters for candidate pool (teams built from these players)
         max_minutes_in_data_cf = int(pd.to_numeric(df.get('Minutes played', pd.Series([0])), errors='coerce').fillna(0).max())
