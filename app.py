@@ -457,14 +457,35 @@ for rect, v in zip(bars, vals):
 st.pyplot(fig, use_container_width=True)
 # ----------------- END -----------------
 
+# ---------- ONE GLOBAL PLAYER SELECTION ----------
+PLAYER_OPTIONS = sorted(df["Player"].dropna().unique().tolist())
+if "sel_player" not in st.session_state or st.session_state.sel_player not in PLAYER_OPTIONS:
+    st.session_state.sel_player = (PLAYER_OPTIONS[0] if PLAYER_OPTIONS else None)
+
+def get_selected_player_row():
+    name = st.session_state.sel_player
+    if not name:
+        return None, pd.DataFrame()
+    base = df_f if "df_f" in locals() and isinstance(df_f, pd.DataFrame) and not df_f.empty else df
+    row = base[base["Player"] == name].head(1)
+    if row.empty:
+        row = df[df["Player"] == name].head(1)
+    return name, row
 
 
 
 
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
 st.subheader("🎯 Single Player Role Profile")
-player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
-player_row = df_f[df_f["Player"] == player_name].head(1)
+st.selectbox(
+    "Choose player",
+    PLAYER_OPTIONS,
+    index=(PLAYER_OPTIONS.index(st.session_state.sel_player)
+           if st.session_state.sel_player in PLAYER_OPTIONS else 0),
+    key="sel_player"   # <- writes the choice globally
+)
+player_name, player_row = get_selected_player_row()
+
 
 # derive defaults from selected player (to propagate)
 default_pos_prefix = str(player_row["Position"].iloc[0])[:2] if not player_row.empty else "CF"
@@ -1469,12 +1490,21 @@ with st.expander("Radar settings", expanded=False):
         st.warning("Not enough players for this filter.")
         players = sorted(df["Player"].dropna().unique().tolist())
 
-    # default Player A = selected player if present
-    try:
-        pA_index = players.index(player_name)
-    except Exception:
-        pA_index = 0
-    pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
+# Player A follows the global selection from the profile picker
+pA = st.session_state.sel_player
+
+# If the globally selected player isn’t in the current radar pool, fall back to first
+if pA not in players and len(players) > 0:
+    pA = players[0]
+
+# (Optional) show it read-only so users see who A is without changing it here
+st.selectbox(
+    "Player A (red)",
+    players,
+    index=(players.index(pA) if pA in players else 0),
+    key="rad_a_view",
+    disabled=True
+)
 
     # default Player B = next one (or index 1)
     pB_default_index = 1 if len(players) > 1 else 0
@@ -1713,7 +1743,7 @@ with st.expander("Similarity settings", expanded=False):
 
 # --- Similarity computation ---
 if not player_row.empty:
-    target_row_full = df[df['Player'] == player_name].head(1).iloc[0]
+    target_row_full = df[df['Player'] == st.session_state.sel_player].head(1).iloc[0]
     target_league = target_row_full['League']
 
     df_candidates = df[df['League'].isin(sim_leagues)].copy()
@@ -1927,20 +1957,24 @@ else:
         # default position prefix + default target = selected player
         pos_scope_cf = st.text_input("Position startswith (club fit)", default_pos_prefix, key="cf_pos_scope")
 
-        # Target player selector (from target leagues) default to selected player
-        target_pool_cf = df[df['League'].isin(target_leagues_cf)]
-        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
-        target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-        try:
-            default_target_idx = target_options_cf.index(player_name)
-        except Exception:
-            default_target_idx = 0 if target_options_cf else 0
-        target_player_cf = st.selectbox(
-            "Target player",
-            target_options_cf,
-            index=default_target_idx if target_options_cf else 0,
-            key="cf_target_player"
-        )
+# Target player mirrors the global selection
+target_pool_cf = df[df['League'].isin(target_leagues_cf)]
+target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
+target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
+
+# Use the global choice; if it’s not in the allowed list, fall back to first
+target_player_cf = st.session_state.get("sel_player", None)
+if target_player_cf not in target_options_cf:
+    target_player_cf = target_options_cf[0] if target_options_cf else None
+
+# Show it read-only so it stays in sync
+st.selectbox(
+    "Target player",
+    target_options_cf,
+    index=(target_options_cf.index(target_player_cf) if target_player_cf in target_options_cf else 0),
+    key="cf_target_player_view",
+    disabled=True
+)
 
         # Minutes / age filters for candidate pool (teams built from these players)
         max_minutes_in_data_cf = int(pd.to_numeric(df.get('Minutes played', pd.Series([0])), errors='coerce').fillna(0).max())
