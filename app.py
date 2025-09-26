@@ -1497,34 +1497,61 @@ pA = st.session_state.sel_player
 if pA not in players and len(players) > 0:
     pA = players[0]
 
-# (Optional) show it read-only so users see who A is without changing it here
-st.selectbox(
-    "Player A (red)",
-    players,
-    index=(players.index(pA) if pA in players else 0),
-    key="rad_a_view",
-    disabled=True
-)
+with st.expander("Radar settings", expanded=False):
+    # default pos prefix from selected player
+    pos_scope = st.text_input("Position startswith (radar pool)", default_pos_prefix, key="rad_pos")
 
-# default Player B = next one (or index 1)
-pB_default_index = 1 if len(players) > 1 else 0
-if pA in players and players.index(pA) == pB_default_index and len(players) > 2:
-    pB_default_index = 2
-pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
+    df["Minutes played"] = pd.to_numeric(df["Minutes played"], errors="coerce")
+    df["Age"]            = pd.to_numeric(df["Age"], errors="coerce")
+    min_minutes_r, max_minutes_r = st.slider("Minutes filter (radar pool)", 0, 5000, (1000, 5000), key="rad_min")
+    age_min_r_bound = int(np.nanmin(df["Age"])) if df["Age"].notna().any() else 14
+    age_max_r_bound = int(np.nanmax(df["Age"])) if df["Age"].notna().any() else 45
+    min_age_r, max_age_r = st.slider("Age filter (radar pool)", age_min_r_bound, age_max_r_bound, (16, 40), key="rad_age")
 
+    picker_pool = df[df["Position"].astype(str).apply(position_filter)].copy()
+    players = sorted(picker_pool["Player"].dropna().unique().tolist())
+    if len(players) < 2:
+        st.warning("Not enough players for this filter.")
+        players = sorted(df["Player"].dropna().unique().tolist())
 
+    # ----- Player A follows the global selection -----
+    pA = st.session_state.sel_player
+    if pA not in players and players:
+        pA = players[0]
 
+    # Read-only display so it stays in sync
+    st.selectbox(
+        "Player A (red)",
+        players,
+        index=(players.index(pA) if pA in players else 0),
+        key="rad_a_view",
+        disabled=True,
+    )
+
+    # ----- Player B picker -----
+    pB_default_index = 1 if len(players) > 1 else 0
+    if pA in players and players.index(pA) == pB_default_index and len(players) > 2:
+        pB_default_index = 2
+    pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
+
+    # ----- Metrics block (keep SAME indentation as above) -----
     DEFAULT_METRICS = [
-    "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions", "Aerial duels won, %",
-    "Passes per 90","Accurate passes, %","Progressive passes per 90",
-    "Progressive runs per 90","Dribbles per 90",
-    "xA per 90","Passes to penalty area per 90"
+        "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions","Aerial duels won, %",
+        "Passes per 90","Accurate passes, %","Progressive passes per 90",
+        "Progressive runs per 90","Dribbles per 90",
+        "xA per 90","Passes to penalty area per 90",
     ]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     metrics_default = [m for m in DEFAULT_METRICS if m in df.columns]
-    radar_metrics = st.multiselect("Radar metrics", [c for c in df.columns if c in numeric_cols], metrics_default, key="rad_ms")
+    radar_metrics = st.multiselect(
+        "Radar metrics",
+        [c for c in df.columns if c in numeric_cols],
+        metrics_default,
+        key="rad_ms",
+    )
     sort_by_gap = st.checkbox("Sort axes by biggest gap", False, key="rad_sort")
     show_avg    = st.checkbox("Show pool average (thin line)", True, key="rad_avg")
+
 
 # Build radar pool and draw
 def clean_label_r(s: str) -> str:
