@@ -462,10 +462,31 @@ st.pyplot(fig, use_container_width=True)
 
 
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
+# ================= TOP OF INDIVIDUAL PLAYER PROFILE =================
+# Assumes df_f exists and has at least columns: Player, Position, League
+
 st.subheader("🎯 Single Player Role Profile")
-player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
-st.session_state["selected_player"] = player_name  # <- single source of truth
+
+# 1) Player picker (from df_f) + persist to session state
+player_name = st.selectbox("Choose player", sorted(df_f["Player"].dropna().unique()))
+st.session_state["selected_player"] = player_name  # <-- critical for downstream defaults
+
+# 2) Pull the player's row and safe defaults used by other blocks
 player_row = df_f[df_f["Player"] == player_name].head(1)
+
+# robust default position prefix & default league for pools
+if not player_row.empty:
+    _pos = str(player_row.iloc[0].get("Position", ""))
+    default_pos_prefix = (_pos[:2] if len(_pos) >= 2 else _pos) or "CF"
+    default_league_for_pool = [player_row.iloc[0].get("League")]
+else:
+    default_pos_prefix = "CF"
+    default_league_for_pool = []
+
+# (Optional) small helper to fetch the current selected name downstream
+def _selected_name() -> str:
+    return st.session_state.get("selected_player", player_name)
+# ================= END TOP OF INDIVIDUAL PLAYER PROFILE =============
 
 
 # derive defaults from selected player (to propagate)
@@ -597,25 +618,22 @@ else:
     # ---------- 1) PERFORMANCE CHART FIRST ----------
     labels = [clean_attacker_label(m) for m in POLAR_METRICS if m in pct_map]
     vals   = [pct_map[m] for m in POLAR_METRICS if m in pct_map]
-if vals:
-    fig = plot_attacker_polar_chart(labels, vals)
-    team = str(ply["Team"]); league = str(ply["League"])
+    if vals:
+        fig = plot_attacker_polar_chart(labels, vals)
+        team = str(ply["Team"]); league = str(ply["League"])
 
-    # Minutes → 90s; goals/assists already parsed above
-    minutes_safe = minutes if isinstance(minutes, (int, float)) else 0
-    nineties = round(minutes_safe / 90.0, 1)
-    goals_safe = goals if isinstance(goals, (int, float)) else 0
-    assists_safe = assists if isinstance(assists, (int, float)) else 0
+# Minutes → 90s; goals/assists already parsed above
+minutes_safe = minutes if isinstance(minutes, (int, float)) else 0
+nineties = round(minutes_safe / 90.0, 1)
+goals_safe = goals if isinstance(goals, (int, float)) else 0
+assists_safe = assists if isinstance(assists, (int, float)) else 0
 
-    fig.text(0.06, 0.94, f"{player_name} — Performance Chart",
-             fontsize=16, weight='bold', ha='left', color='#111827')
-    fig.text(0.06, 0.915, f"{team} • {league} • {nineties} 90's • Goals: {int(goals_safe)} • Assists: {int(assists_safe)}",
-             fontsize=9, ha='left', color='#6b7280')
+fig.text(0.06, 0.94, f"{player_name} — Performance Chart",
+         fontsize=16, weight='bold', ha='left', color='#111827')
+fig.text(0.06, 0.915, f"{team} • {league} • {nineties} 90's • Goals: {int(goals_safe)} • Assists: {int(assists_safe)}",
+         fontsize=9, ha='left', color='#6b7280')
 
-    st.pyplot(fig, use_container_width=True)
-else:
-    st.info("Not enough data to draw the performance chart for the current pool/metrics.")
-
+st.pyplot(fig, use_container_width=True)
 
    # ---------- 2) NOTES: Style / Strengths / Weaknesses ----------
 
@@ -1454,87 +1472,71 @@ except Exception as e:
 # ----------------- (B) COMPARISON RADAR (SB-STYLE) -----------------
 st.markdown("---")
 st.header("📊 Player Comparison Radar")
+
 with st.expander("Radar settings", expanded=False):
-    # default pos prefix from selected player
+    # Position scope defaults to the selected player's prefix
     pos_scope = st.text_input("Position startswith (radar pool)", default_pos_prefix, key="rad_pos")
+
+    # Ensure numeric types for filters
     df["Minutes played"] = pd.to_numeric(df["Minutes played"], errors="coerce")
     df["Age"]            = pd.to_numeric(df["Age"], errors="coerce")
+
     min_minutes_r, max_minutes_r = st.slider("Minutes filter (radar pool)", 0, 5000, (1000, 5000), key="rad_min")
-    # default age 16–40 (changed from 16–33)
+
     age_min_r_bound = int(np.nanmin(df["Age"])) if df["Age"].notna().any() else 14
     age_max_r_bound = int(np.nanmax(df["Age"])) if df["Age"].notna().any() else 45
-    min_age_r, max_age_r = st.slider(
-        "Age filter (radar pool)",
-        age_min_r_bound, age_max_r_bound,
-        (16, 40), key="rad_age"
-    )
-# Build the picker list but always include the selected player as default
-pos_scope = st.text_input("Position startswith (radar pool)", default_pos_prefix, key="rad_pos")
+    min_age_r, max_age_r = st.slider("Age filter (radar pool)", age_min_r_bound, age_max_r_bound, (16, 40), key="rad_age")
 
-df["Minutes played"] = pd.to_numeric(df["Minutes played"], errors="coerce")
-df["Age"]            = pd.to_numeric(df["Age"], errors="coerce")
-min_minutes_r, max_minutes_r = st.slider("Minutes filter (radar pool)", 0, 5000, (1000, 5000), key="rad_min")
+    # ---- Build picker list respecting the position scope; always include the selected player as default
+    picker_pool = df.copy()
+    if pos_scope:
+        picker_pool = picker_pool[picker_pool["Position"].astype(str).str.startswith(pos_scope, na=False)]
 
-age_min_r_bound = int(np.nanmin(df["Age"])) if df["Age"].notna().any() else 14
-age_max_r_bound = int(np.nanmax(df["Age"])) if df["Age"].notna().any() else 45
-min_age_r, max_age_r = st.slider("Age filter (radar pool)", age_min_r_bound, age_max_r_bound, (16, 40), key="rad_age")
+    players = sorted(picker_pool["Player"].dropna().unique().tolist())
 
-# Use startswith on the typed position scope
-picker_pool = df.copy()
-if pos_scope:
-    picker_pool = picker_pool[picker_pool["Position"].astype(str).str.startswith(pos_scope, na=False)]
-
-players = sorted(picker_pool["Player"].dropna().unique().tolist())
-
-# Ensure the UI always defaults to the currently selected player
-selected_name = st.session_state.get("selected_player", player_name)
-if selected_name and selected_name not in players and not pd.isna(selected_name):
-    players = [selected_name] + players  # prepend, then de-dupe while keeping order
-    seen = set()
-    players = [p for p in players if not (p in seen or seen.add(p))]
-
-if len(players) < 2:
-    st.warning("Not enough players for this filter.")
-    players = sorted(df["Player"].dropna().unique().tolist())
+    selected_name = st.session_state.get("selected_player", player_name)
     if selected_name and selected_name not in players:
+        # Prepend selected player and de-duplicate while preserving order
         players = [selected_name] + players
-        seen = set()
-        players = [p for p in players if not (p in seen or seen.add(p))]
+        _seen = set()
+        players = [p for p in players if not (p in _seen or _seen.add(p))]
 
-# Defaults
-try:
-    pA_index = players.index(selected_name)
-except ValueError:
-    pA_index = 0
+    if len(players) < 2:
+        st.warning("Not enough players for this filter.")
+        # Fallback to everyone; still make sure selected is present
+        players = sorted(df["Player"].dropna().unique().tolist())
+        if selected_name and selected_name not in players:
+            players = [selected_name] + players
+            _seen = set()
+            players = [p for p in players if not (p in _seen or _seen.add(p))]
 
-pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
+    # Default A = selected player (or first in list)
+    try:
+        pA_index = players.index(selected_name)
+    except ValueError:
+        pA_index = 0
+    pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
-pB_default_index = 1 if len(players) > 1 else 0
-if pA_index == pB_default_index and len(players) > 2:
-    pB_default_index = 2
-pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
-
-
-
-    # default Player B = next one (or index 1)
+    # Default B = next distinct player
     pB_default_index = 1 if len(players) > 1 else 0
     if pA_index == pB_default_index and len(players) > 2:
         pB_default_index = 2
     pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
 
+    # Metrics
     DEFAULT_METRICS = [
-    "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions", "Aerial duels won, %",
-    "Passes per 90","Accurate passes, %","Progressive passes per 90",
-    "Progressive runs per 90","Dribbles per 90",
-    "xA per 90","Passes to penalty area per 90"
+        "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions","Aerial duels won, %",
+        "Passes per 90","Accurate passes, %","Progressive passes per 90",
+        "Progressive runs per 90","Dribbles per 90","xA per 90","Passes to penalty area per 90"
     ]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     metrics_default = [m for m in DEFAULT_METRICS if m in df.columns]
     radar_metrics = st.multiselect("Radar metrics", [c for c in df.columns if c in numeric_cols], metrics_default, key="rad_ms")
+
     sort_by_gap = st.checkbox("Sort axes by biggest gap", False, key="rad_sort")
     show_avg    = st.checkbox("Show pool average (thin line)", True, key="rad_avg")
 
-# Build radar pool and draw
+# ---- Helpers
 def clean_label_r(s: str) -> str:
     s = s.replace("Aerial duels won, %", "Aerial %")
     s = s.replace("xA per 90", "xA")
@@ -1542,41 +1544,59 @@ def clean_label_r(s: str) -> str:
     s = s.replace("Defensive duels per 90", "Defensive duels").replace("Passes per 90", "Passes")
     s = s.replace("Progressive runs per 90", "Progressive Runs").replace("Progressive passes per 90", "Progressive Passes")
     s = s.replace("Passes to penalty area per 90", "Passes to Pen Area").replace("Accurate passes, %", "Pass %")
-    s = re.sub(r"\s*per\s*90", "", s, flags=re.I); return s
+    s = re.sub(r"\s*per\s*90", "", s, flags=re.I)
+    return s
 
+# ---- Build radar pool and draw
 if radar_metrics:
     try:
-        rowA = df[df["Player"] == pA].iloc[0]; rowB = df[df["Player"] == pB].iloc[0]
+        rowA = df[df["Player"] == pA].iloc[0]
+        rowB = df[df["Player"] == pB].iloc[0]
         union_leagues = {rowA["League"], rowB["League"]}
-        pool = df[(df["League"].isin(union_leagues)) &
-                  (df["Position"].astype(str).str.startswith(pos_scope, na=False)) &
-                  (df["Minutes played"].between(min_minutes_r, max_minutes_r)) &
-                  (df["Age"].between(min_age_r, max_age_r))].copy()
-        for m in radar_metrics: pool[m] = pd.to_numeric(pool[m], errors="coerce")
+
+        # IMPORTANT: use the same pos_scope rule for the pool
+        pool = df[
+            (df["League"].isin(union_leagues)) &
+            (df["Position"].astype(str).str.startswith(pos_scope, na=False)) &
+            (df["Minutes played"].between(min_minutes_r, max_minutes_r)) &
+            (df["Age"].between(min_age_r, max_age_r))
+        ].copy()
+
+        for m in radar_metrics:
+            pool[m] = pd.to_numeric(pool[m], errors="coerce")
         pool = pool.dropna(subset=radar_metrics)
+
         if not pool.empty:
             labels = [clean_label_r(m) for m in radar_metrics]
             pool_pct = pool[radar_metrics].rank(pct=True) * 100.0
+
             def pct_for(player):
                 sub_idx = pool[pool["Player"] == player].index
-                if len(sub_idx)==0: return np.full(len(radar_metrics), np.nan)
+                if len(sub_idx) == 0:
+                    return np.full(len(radar_metrics), np.nan)
+                # If duplicated within pool, average them (rare but safe)
                 return pool_pct.loc[sub_idx, :].mean(axis=0).values
-            A_r = pct_for(pA); B_r = pct_for(pB); AVG_r = np.full(len(radar_metrics), 50.0)
+
+            A_r = pct_for(pA)
+            B_r = pct_for(pB)
+            AVG_r = np.full(len(radar_metrics), 50.0)
 
             axis_min = pool[radar_metrics].min().values
             axis_max = pool[radar_metrics].max().values
             pad = (axis_max - axis_min) * 0.07
-            axis_min = axis_min - pad; axis_max = axis_max + pad
-            ring_radii = np.linspace(10, 100, 11)
+            axis_min = axis_min - pad
+            axis_max = axis_max + pad
             axis_ticks = [np.linspace(axis_min[i], axis_max[i], 11) for i in range(len(labels))]
 
             if sort_by_gap:
                 order = np.argsort(-np.abs(A_r - B_r))
                 labels   = [labels[i] for i in order]
-                A_r      = A_r[order]; B_r = B_r[order]; AVG_r = AVG_r[order]
+                A_r      = A_r[order]
+                B_r      = B_r[order]
+                AVG_r    = AVG_r[order]
                 axis_ticks = [axis_ticks[i] for i in order]
 
-            # draw
+            # --- draw (unchanged style)
             COL_A = "#C81E1E"; COL_B = "#1D4ED8"
             FILL_A = (200/255, 30/255, 30/255, 0.60)
             FILL_B = (29/255, 78/255, 216/255, 0.60)
@@ -1590,12 +1610,15 @@ if radar_metrics:
                 N = len(labels)
                 theta = np.linspace(0, 2*np.pi, N, endpoint=False)
                 theta_closed = np.concatenate([theta, theta[:1]])
-                Ar = np.concatenate([A_r, A_r[:1]]); Br = np.concatenate([B_r, B_r[:1]])
+                Ar = np.concatenate([A_r, A_r[:1]])
+                Br = np.concatenate([B_r, B_r[:1]])
+
                 fig = plt.figure(figsize=(13.2, 8.0), dpi=260); fig.patch.set_facecolor(PAGE_BG)
                 ax = plt.subplot(111, polar=True); ax.set_facecolor(AX_BG)
                 ax.set_theta_offset(np.pi/2); ax.set_theta_direction(-1)
                 ax.set_xticks(theta); ax.set_xticklabels(labels, fontsize=AXIS_FS, color=LABEL_COLOR, fontweight=600)
                 ax.set_yticks([]); ax.grid(False); [s.set_visible(False) for s in ax.spines.values()]
+
                 for i in range(10):
                     r0, r1 = np.linspace(INNER_HOLE,100,11)[i], np.linspace(INNER_HOLE,100,11)[i+1]
                     band = GRID_BAND_A if i % 2 == 0 else GRID_BAND_B
@@ -1604,28 +1627,39 @@ if radar_metrics:
                 ring_t = np.linspace(0, 2*np.pi, 361)
                 for r in np.linspace(INNER_HOLE,100,11):
                     ax.plot(ring_t, np.full_like(ring_t, r), color=RING_COLOR, lw=RING_LW, zorder=0.9)
+
                 start_idx = 2
                 for i, ang in enumerate(theta):
                     vals = ticks[i][start_idx:]
                     for rr, v in zip(np.linspace(INNER_HOLE,100,11)[start_idx:], vals):
                         ax.text(ang, rr-1.8, f"{v:.1f}", ha="center", va="center",
                                 fontsize=TICK_FS, color=TICK_COLOR, zorder=1.1)
+
                 ax.add_artist(Circle((0,0), radius=INNER_HOLE-0.6, transform=ax.transData._b,
                                      color=PAGE_BG, zorder=1.2, ec="none"))
+
                 if show_avg and AVG_r is not None:
                     Avg = np.concatenate([AVG_r, AVG_r[:1]])
                     ax.plot(theta_closed, Avg, lw=1.5, color="#94A3B8", ls="--", alpha=0.9, zorder=2.2)
-                ax.plot(theta_closed, Ar, color=COL_A, lw=2.2, zorder=3); ax.fill(theta_closed, Ar, color=FILL_A, zorder=2.5)
-                ax.plot(theta_closed, Br, color=COL_B, lw=2.2, zorder=3); ax.fill(theta_closed, Br, color=FILL_B, zorder=2.5)
+
+                ax.plot(theta_closed, Ar, color=COL_A, lw=2.2, zorder=3)
+                ax.fill(theta_closed, Ar, color=FILL_A, zorder=2.5)
+                ax.plot(theta_closed, Br, color=COL_B, lw=2.2, zorder=3)
+                ax.fill(theta_closed, Br, color=FILL_B, zorder=2.5)
+
                 ax.set_rlim(0, 105)
+
                 minsA = f"{int(pd.to_numeric(rowA.get('Minutes played',0))):,} mins" if pd.notna(rowA.get('Minutes played')) else "Minutes: N/A"
                 minsB = f"{int(pd.to_numeric(rowB.get('Minutes played',0))):,} mins" if pd.notna(rowB.get('Minutes played')) else "Minutes: N/A"
+
                 fig.text(0.12, 0.96,  f"{pA}", color=COL_A, fontsize=TITLE_FS, fontweight="bold", ha="left")
                 fig.text(0.12, 0.935, f"{rowA['Team']} — {rowA['League']}", color=COL_A, fontsize=SUB_FS, ha="left")
                 fig.text(0.12, 0.915, minsA, color="#374151", fontsize=10, ha="left")
+
                 fig.text(0.88, 0.96,  f"{pB}", color=COL_B, fontsize=TITLE_FS, fontweight="bold", ha="right")
                 fig.text(0.88, 0.935, f"{rowB['Team']} — {rowB['League']}", color=COL_B, fontsize=SUB_FS, ha="right")
                 fig.text(0.88, 0.915, minsB, color="#374151", fontsize=10, ha="right")
+
                 return fig
 
             figr = draw_radar(labels, A_r, B_r, axis_ticks, pA, "", "", pB, "", "", show_avg=show_avg, AVG_r=AVG_r)
@@ -1753,10 +1787,8 @@ with st.expander("Similarity settings", expanded=False):
 
 # --- Similarity computation ---
 if not player_row.empty:
-    sp = st.session_state.get("selected_player", player_name)
-    target_row_full = df[df['Player'] == sp].head(1).iloc[0]
+    target_row_full = df[df['Player'] == player_name].head(1).iloc[0]
     target_league = target_row_full['League']
-
 
     df_candidates = df[df['League'].isin(sim_leagues)].copy()
 
@@ -1794,7 +1826,7 @@ if not player_row.empty:
     )
 
     # Remove the selected player from candidates
-    df_candidates = df_candidates[df_candidates['Player'] != sp]
+    df_candidates = df_candidates[df_candidates['Player'] != player_name]
 
     # Ensure features are present and numeric
     df_candidates = df_candidates.dropna(subset=SIM_FEATURES)
@@ -1971,13 +2003,11 @@ else:
 
         # Target player selector (from target leagues) default to selected player
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
-        # FIX: honor the typed position scope
-        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
+        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-        sp = st.session_state.get("selected_player", player_name)
         try:
-            default_target_idx = target_options_cf.index(sp)
-        except ValueError:
+            default_target_idx = target_options_cf.index(player_name)
+        except Exception:
             default_target_idx = 0 if target_options_cf else 0
         target_player_cf = st.selectbox(
             "Target player",
@@ -2028,8 +2058,7 @@ else:
     if target_player_cf and (target_player_cf in df['Player'].values):
         # Candidate player pool
         df_candidates_cf = df[df['League'].isin(leagues_selected_cf)].copy()
-        # FIX: honor the typed position scope
-        df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
+        df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).apply(position_filter)]
 
         # Numerics + filters
         df_candidates_cf['Minutes played'] = pd.to_numeric(df_candidates_cf['Minutes played'], errors='coerce')
@@ -2049,8 +2078,7 @@ else:
         else:
             # Target (from target leagues)
             df_target_pool_cf = df[df['League'].isin(target_leagues_cf)].copy()
-            # FIX: honor the typed position scope
-            df_target_pool_cf = df_target_pool_cf[df_target_pool_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
+            df_target_pool_cf = df_target_pool_cf[df_target_pool_cf['Position'].astype(str).apply(position_filter)]
 
             if target_player_cf not in df_target_pool_cf['Player'].values:
                 st.info("Target player not found in selected target leagues.")
@@ -2071,9 +2099,7 @@ else:
                 club_profiles_cf = df_candidates_cf.groupby('Team')[CF_FEATURES].mean().reset_index()
 
                 # Team league & average team MV from same pool
-                team_league_cf = df_candidates_cf.groupby('Team')['League'].agg(
-                    lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0]
-                )
+                team_league_cf = df_candidates_cf.groupby('Team')['League'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0])
                 team_market_cf = df_candidates_cf.groupby('Team')['Market value'].mean()
                 club_profiles_cf['League'] = club_profiles_cf['Team'].map(team_league_cf)
                 club_profiles_cf['Avg Team Market Value'] = club_profiles_cf['Team'].map(team_market_cf)
