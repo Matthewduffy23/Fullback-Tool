@@ -464,8 +464,9 @@ st.pyplot(fig, use_container_width=True)
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
 st.subheader("🎯 Single Player Role Profile")
 player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
-st.session_state["selected_player"] = player_name
+st.session_state["selected_player"] = player_name  # <- single source of truth
 player_row = df_f[df_f["Player"] == player_name].head(1)
+
 
 # derive defaults from selected player (to propagate)
 default_pos_prefix = str(player_row["Position"].iloc[0])[:2] if not player_row.empty else "CF"
@@ -1467,17 +1468,18 @@ with st.expander("Radar settings", expanded=False):
         age_min_r_bound, age_max_r_bound,
         (16, 40), key="rad_age"
     )
-    picker_pool = df[df["Position"].astype(str).apply(position_filter)].copy()
+    # Honor the current position scope string (e.g., "CF", "RW", etc.)
+    picker_pool = df[df["Position"].astype(str).str.startswith(pos_scope, na=False)].copy()
     players = sorted(picker_pool["Player"].dropna().unique().tolist())
     if len(players) < 2:
         st.warning("Not enough players for this filter.")
         players = sorted(df["Player"].dropna().unique().tolist())
 
-    # default Player A = selected player if present
+    # default Player A = selected player from session (fallback to current player_name)
     sp = st.session_state.get("selected_player", player_name)
     try:
         pA_index = players.index(sp)
-    except ValueError:
+    except Exception:
         pA_index = 0
     pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
@@ -1516,7 +1518,7 @@ if radar_metrics:
         rowA = df[df["Player"] == pA].iloc[0]; rowB = df[df["Player"] == pB].iloc[0]
         union_leagues = {rowA["League"], rowB["League"]}
         pool = df[(df["League"].isin(union_leagues)) &
-                  (df["Position"].astype(str).apply(position_filter)) &
+                  (df["Position"].astype(str).str.startswith(pos_scope, na=False)) &
                   (df["Minutes played"].between(min_minutes_r, max_minutes_r)) &
                   (df["Age"].between(min_age_r, max_age_r))].copy()
         for m in radar_metrics: pool[m] = pd.to_numeric(pool[m], errors="coerce")
@@ -1938,7 +1940,8 @@ else:
 
         # Target player selector (from target leagues) default to selected player
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
-        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
+        # FIX: honor the typed position scope
+        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
         sp = st.session_state.get("selected_player", player_name)
         try:
@@ -1994,7 +1997,8 @@ else:
     if target_player_cf and (target_player_cf in df['Player'].values):
         # Candidate player pool
         df_candidates_cf = df[df['League'].isin(leagues_selected_cf)].copy()
-        df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).apply(position_filter)]
+        # FIX: honor the typed position scope
+        df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
 
         # Numerics + filters
         df_candidates_cf['Minutes played'] = pd.to_numeric(df_candidates_cf['Minutes played'], errors='coerce')
@@ -2014,7 +2018,8 @@ else:
         else:
             # Target (from target leagues)
             df_target_pool_cf = df[df['League'].isin(target_leagues_cf)].copy()
-            df_target_pool_cf = df_target_pool_cf[df_target_pool_cf['Position'].astype(str).apply(position_filter)]
+            # FIX: honor the typed position scope
+            df_target_pool_cf = df_target_pool_cf[df_target_pool_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
 
             if target_player_cf not in df_target_pool_cf['Player'].values:
                 st.info("Target player not found in selected target leagues.")
@@ -2035,7 +2040,9 @@ else:
                 club_profiles_cf = df_candidates_cf.groupby('Team')[CF_FEATURES].mean().reset_index()
 
                 # Team league & average team MV from same pool
-                team_league_cf = df_candidates_cf.groupby('Team')['League'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0])
+                team_league_cf = df_candidates_cf.groupby('Team')['League'].agg(
+                    lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0]
+                )
                 team_market_cf = df_candidates_cf.groupby('Team')['Market value'].mean()
                 club_profiles_cf['League'] = club_profiles_cf['Team'].map(team_league_cf)
                 club_profiles_cf['Avg Team Market Value'] = club_profiles_cf['Team'].map(team_market_cf)
@@ -2119,6 +2126,4 @@ else:
                             "strength_range": (int(min_strength_cf), int(max_strength_cf)),
                             "n_teams": int(results_cf.shape[0]),
                         })
-
-
 
