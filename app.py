@@ -1469,12 +1469,14 @@ try:
 except Exception as e:
     st.info(f"Scatter could not be drawn: {e}")
 # ----------------------------------------------------------------------
-# ----------------- (B) COMPARISON RADAR (SB-STYLE) -----------------
+# ----------------- (B) COMPARISON RADAR (SB-STYLE) — FIXED -----------------
+from matplotlib.patches import Wedge, Circle  # <-- make sure these are imported
+
 st.markdown("---")
 st.header("📊 Player Comparison Radar")
 
 with st.expander("Radar settings", expanded=False):
-    # Position scope defaults to the selected player's prefix
+    # Default to the selected player's prefix (from the top block)
     pos_scope = st.text_input("Position startswith (radar pool)", default_pos_prefix, key="rad_pos")
 
     # Ensure numeric types for filters
@@ -1487,7 +1489,7 @@ with st.expander("Radar settings", expanded=False):
     age_max_r_bound = int(np.nanmax(df["Age"])) if df["Age"].notna().any() else 45
     min_age_r, max_age_r = st.slider("Age filter (radar pool)", age_min_r_bound, age_max_r_bound, (16, 40), key="rad_age")
 
-    # ---- Build picker list respecting the position scope; always include the selected player as default
+    # ---- Player picker list (respect pos prefix, but always include selected)
     picker_pool = df.copy()
     if pos_scope:
         picker_pool = picker_pool[picker_pool["Position"].astype(str).str.startswith(pos_scope, na=False)]
@@ -1496,28 +1498,23 @@ with st.expander("Radar settings", expanded=False):
 
     selected_name = st.session_state.get("selected_player", player_name)
     if selected_name and selected_name not in players:
-        # Prepend selected player and de-duplicate while preserving order
         players = [selected_name] + players
-        _seen = set()
-        players = [p for p in players if not (p in _seen or _seen.add(p))]
+        seen = set(); players = [p for p in players if not (p in seen or seen.add(p))]
 
     if len(players) < 2:
-        st.warning("Not enough players for this filter.")
-        # Fallback to everyone; still make sure selected is present
+        st.warning("Not enough players for this filter. Widening picker to all.")
         players = sorted(df["Player"].dropna().unique().tolist())
         if selected_name and selected_name not in players:
             players = [selected_name] + players
-            _seen = set()
-            players = [p for p in players if not (p in _seen or _seen.add(p))]
+            seen = set(); players = [p for p in players if not (p in seen or seen.add(p))]
 
-    # Default A = selected player (or first in list)
+    # Defaults
     try:
         pA_index = players.index(selected_name)
     except ValueError:
         pA_index = 0
     pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
-    # Default B = next distinct player
     pB_default_index = 1 if len(players) > 1 else 0
     if pA_index == pB_default_index and len(players) > 2:
         pB_default_index = 2
@@ -1531,12 +1528,16 @@ with st.expander("Radar settings", expanded=False):
     ]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     metrics_default = [m for m in DEFAULT_METRICS if m in df.columns]
-    radar_metrics = st.multiselect("Radar metrics", [c for c in df.columns if c in numeric_cols], metrics_default, key="rad_ms")
+    radar_metrics = st.multiselect(
+        "Radar metrics", [c for c in df.columns if c in numeric_cols], metrics_default, key="rad_ms"
+    )
 
     sort_by_gap = st.checkbox("Sort axes by biggest gap", False, key="rad_sort")
     show_avg    = st.checkbox("Show pool average (thin line)", True, key="rad_avg")
 
 # ---- Helpers
+import re, numpy as np, matplotlib.pyplot as plt
+
 def clean_label_r(s: str) -> str:
     s = s.replace("Aerial duels won, %", "Aerial %")
     s = s.replace("xA per 90", "xA")
@@ -1547,26 +1548,47 @@ def clean_label_r(s: str) -> str:
     s = re.sub(r"\s*per\s*90", "", s, flags=re.I)
     return s
 
-# ---- Build radar pool and draw
+# ---- Pool builder with smart fallbacks (prevents “empty pool”)
+def build_radar_pool(rowA, rowB, metrics, use_pos_prefix=True, fill_if_empty=True):
+    leagues = {rowA.get("League"), rowB.get("League")}
+    base = df[(df["League"].isin(leagues)) &
+              (df["Minutes played"].between(min_minutes_r, max_minutes_r)) &
+              (df["Age"].between(min_age_r, max_age_r))].copy()
+
+    if use_pos_prefix and pos_scope:
+        base = base[base["Position"].astype(str).str.startswith(pos_scope, na=False)]
+
+    # ensure numeric metrics
+    for m in metrics:
+        base[m] = pd.to_numeric(base[m], errors="coerce")
+
+    pool = base.dropna(subset=metrics)
+
+    # Fallback 1: remove pos filter if nothing left
+    if pool.empty and use_pos_prefix:
+        pool = build_radar_pool(rowA, rowB, metrics, use_pos_prefix=False, fill_if_empty=fill_if_empty)
+        return pool
+
+    # Fallback 2: median-fill, then drop rows still all-NaN on metrics
+    if pool.empty and fill_if_empty:
+        filled = base.copy()
+        med = filled[metrics].median(numeric_only=True)
+        filled[metrics] = filled[metrics].fillna(med)
+        pool = filled.dropna(subset=metrics, how="all")
+
+    return pool
+
+# ---- Build & plot
 if radar_metrics:
     try:
         rowA = df[df["Player"] == pA].iloc[0]
         rowB = df[df["Player"] == pB].iloc[0]
-        union_leagues = {rowA["League"], rowB["League"]}
 
-        # IMPORTANT: use the same pos_scope rule for the pool
-        pool = df[
-            (df["League"].isin(union_leagues)) &
-            (df["Position"].astype(str).str.startswith(pos_scope, na=False)) &
-            (df["Minutes played"].between(min_minutes_r, max_minutes_r)) &
-            (df["Age"].between(min_age_r, max_age_r))
-        ].copy()
+        pool = build_radar_pool(rowA, rowB, radar_metrics, use_pos_prefix=True, fill_if_empty=True)
 
-        for m in radar_metrics:
-            pool[m] = pd.to_numeric(pool[m], errors="coerce")
-        pool = pool.dropna(subset=radar_metrics)
-
-        if not pool.empty:
+        if pool.empty:
+            st.info("No players remain in radar pool after filters.")
+        else:
             labels = [clean_label_r(m) for m in radar_metrics]
             pool_pct = pool[radar_metrics].rank(pct=True) * 100.0
 
@@ -1574,29 +1596,24 @@ if radar_metrics:
                 sub_idx = pool[pool["Player"] == player].index
                 if len(sub_idx) == 0:
                     return np.full(len(radar_metrics), np.nan)
-                # If duplicated within pool, average them (rare but safe)
                 return pool_pct.loc[sub_idx, :].mean(axis=0).values
 
-            A_r = pct_for(pA)
-            B_r = pct_for(pB)
-            AVG_r = np.full(len(radar_metrics), 50.0)
+            A_r = pct_for(pA); B_r = pct_for(pB); AVG_r = np.full(len(radar_metrics), 50.0)
 
+            # axis ticks
             axis_min = pool[radar_metrics].min().values
             axis_max = pool[radar_metrics].max().values
             pad = (axis_max - axis_min) * 0.07
-            axis_min = axis_min - pad
-            axis_max = axis_max + pad
+            axis_min = axis_min - pad; axis_max = axis_max + pad
             axis_ticks = [np.linspace(axis_min[i], axis_max[i], 11) for i in range(len(labels))]
 
             if sort_by_gap:
                 order = np.argsort(-np.abs(A_r - B_r))
                 labels   = [labels[i] for i in order]
-                A_r      = A_r[order]
-                B_r      = B_r[order]
-                AVG_r    = AVG_r[order]
+                A_r      = A_r[order]; B_r = B_r[order]; AVG_r = AVG_r[order]
                 axis_ticks = [axis_ticks[i] for i in order]
 
-            # --- draw (unchanged style)
+            # ---- draw (unchanged look)
             COL_A = "#C81E1E"; COL_B = "#1D4ED8"
             FILL_A = (200/255, 30/255, 30/255, 0.60)
             FILL_B = (29/255, 78/255, 216/255, 0.60)
@@ -1652,11 +1669,11 @@ if radar_metrics:
                 minsA = f"{int(pd.to_numeric(rowA.get('Minutes played',0))):,} mins" if pd.notna(rowA.get('Minutes played')) else "Minutes: N/A"
                 minsB = f"{int(pd.to_numeric(rowB.get('Minutes played',0))):,} mins" if pd.notna(rowB.get('Minutes played')) else "Minutes: N/A"
 
-                fig.text(0.12, 0.96,  f"{pA}", color=COL_A, fontsize=TITLE_FS, fontweight="bold", ha="left")
+                fig.text(0.12, 0.96,  f"{headerA}", color=COL_A, fontsize=TITLE_FS, fontweight="bold", ha="left")
                 fig.text(0.12, 0.935, f"{rowA['Team']} — {rowA['League']}", color=COL_A, fontsize=SUB_FS, ha="left")
                 fig.text(0.12, 0.915, minsA, color="#374151", fontsize=10, ha="left")
 
-                fig.text(0.88, 0.96,  f"{pB}", color=COL_B, fontsize=TITLE_FS, fontweight="bold", ha="right")
+                fig.text(0.88, 0.96,  f"{headerB}", color=COL_B, fontsize=TITLE_FS, fontweight="bold", ha="right")
                 fig.text(0.88, 0.935, f"{rowB['Team']} — {rowB['League']}", color=COL_B, fontsize=SUB_FS, ha="right")
                 fig.text(0.88, 0.915, minsB, color="#374151", fontsize=10, ha="right")
 
@@ -1664,8 +1681,6 @@ if radar_metrics:
 
             figr = draw_radar(labels, A_r, B_r, axis_ticks, pA, "", "", pB, "", "", show_avg=show_avg, AVG_r=AVG_r)
             st.pyplot(figr, use_container_width=True)
-        else:
-            st.info("No players remain in radar pool after filters.")
     except Exception as e:
         st.info(f"Radar could not be drawn: {e}")
 
