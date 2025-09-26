@@ -457,39 +457,14 @@ for rect, v in zip(bars, vals):
 st.pyplot(fig, use_container_width=True)
 # ----------------- END -----------------
 
-# ---------- GLOBAL SELECTED PLAYER ----------
-PLAYER_OPTIONS = sorted(df["Player"].dropna().unique().tolist())
-
-# initialize once
-if "sel_player" not in st.session_state or st.session_state.sel_player not in PLAYER_OPTIONS:
-    st.session_state.sel_player = (PLAYER_OPTIONS[0] if PLAYER_OPTIONS else None)
-
-def get_selected_player_row():
-    name = st.session_state.sel_player
-    if not name:
-        return None, pd.DataFrame()
-    # prefer filtered pool if available
-    base = df_f if "df_f" in locals() and isinstance(df_f, pd.DataFrame) and not df_f.empty else df
-    row = base[base["Player"] == name].head(1)
-    if row.empty:
-        row = df[df["Player"] == name].head(1)  # fallback
-    return name, row
 
 
 
 
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
 st.subheader("🎯 Single Player Role Profile")
-# this one control is the source of truth
-st.selectbox(
-    "Choose player",
-    PLAYER_OPTIONS,
-    index=(PLAYER_OPTIONS.index(st.session_state.sel_player)
-           if st.session_state.sel_player in PLAYER_OPTIONS else 0),
-    key="sel_player"
-)
-player_name, player_row = get_selected_player_row()
-
+player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
+player_row = df_f[df_f["Player"] == player_name].head(1)
 
 # derive defaults from selected player (to propagate)
 default_pos_prefix = str(player_row["Position"].iloc[0])[:2] if not player_row.empty else "CF"
@@ -1496,7 +1471,7 @@ with st.expander("Radar settings", expanded=False):
 
     # default Player A = selected player if present
     try:
-        pA = st.session_state.sel_player
+        pA_index = players.index(player_name)
     except Exception:
         pA_index = 0
     pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
@@ -1738,7 +1713,7 @@ with st.expander("Similarity settings", expanded=False):
 
 # --- Similarity computation ---
 if not player_row.empty:
-    target_row_full = df[df['Player'] == st.session_state.sel_player].head(1).iloc[0]
+    target_row_full = df[df['Player'] == player_name].head(1).iloc[0]
     target_league = target_row_full['League']
 
     df_candidates = df[df['League'].isin(sim_leagues)].copy()
@@ -1956,20 +1931,11 @@ else:
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
         target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-try:
-    default_target_idx = target_options_cf.index(st.session_state.sel_player)
-except Exception:
-    default_target_idx = 0 if target_options_cf else 0
-
-# mirror the global selection (disable if you don’t want a second control)
-target_player_cf = st.selectbox(
-    "Target player",
-    target_options_cf,
-    index=default_target_idx if target_options_cf else 0,
-    key="cf_target_player",
-    disabled=True  # <- keeps it in sync; remove if you want it editable
-)
-
+        try:
+            default_target_idx = target_options_cf.index(player_name)
+        except Exception:
+            default_target_idx = 0 if target_options_cf else 0
+        target_player_cf = st.selectbox(
             "Target player",
             target_options_cf,
             index=default_target_idx if target_options_cf else 0,
