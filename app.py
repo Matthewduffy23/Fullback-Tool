@@ -462,15 +462,16 @@ st.pyplot(fig, use_container_width=True)
 
 
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
+# --- keep the selected player globally for other sections ---
+def sel_player():
+    # use the canonical selected value from the main selector
+    return st.session_state.get("selected_player", player_name)
+
+# store the main picker’s value once so other blocks can read it
+st.session_state["selected_player"] = player_name
+
 st.subheader("🎯 Single Player Role Profile")
 player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
-# --- canonical selected player (use everywhere) ---
-st.session_state.sel_player = player_name
-
-def sel_player():
-    # always read the one true selection
-    return st.session_state.get("sel_player", player_name)
-
 player_row = df_f[df_f["Player"] == player_name].head(1)
 
 # derive defaults from selected player (to propagate)
@@ -1217,6 +1218,7 @@ else:
 
 # ============================ END — WIDER PANELS, SMALLER CENTER GAP, EXTRA TOP-LEFT PADDING ============================
 
+
 # ----------------- (A) SCATTERPLOT — Goals vs xG -----------------
 st.markdown("---")
 st.header("📈 Scatterplot")
@@ -1475,28 +1477,23 @@ with st.expander("Radar settings", expanded=False):
         st.warning("Not enough players for this filter.")
         players = sorted(df["Player"].dropna().unique().tolist())
 
-# default Player A = selected player (read-only so it never desyncs)
-pA = sel_player()
+    sp = sel_player()
+    
+sp = st.session_state.get("selected_player", player_name)
 try:
-    pA_index = players.index(pA)
-except Exception:
+    pA_index = players.index(sp)
+except ValueError:
     pA_index = 0
-
-st.selectbox(
-    "Player A (red)",
-    players,
-    index=(pA_index if pA in players else 0),
-    key="rad_a_view",
-    disabled=True,  # show, but don't let Radar change Player A
-)
+pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
 
-# default Player B = next one (or index 1)
-pB_default_index = 1 if len(players) > 1 else 0
-if pA_index == pB_default_index and len(players) > 2:
-    pB_default_index = 2
-pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
 
+
+    # default Player B = next one (or index 1)
+    pB_default_index = 1 if len(players) > 1 else 0
+    if pA_index == pB_default_index and len(players) > 2:
+        pB_default_index = 2
+    pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
 
     DEFAULT_METRICS = [
     "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions", "Aerial duels won, %",
@@ -1729,7 +1726,7 @@ with st.expander("Similarity settings", expanded=False):
 
 # --- Similarity computation ---
 if not player_row.empty:
-    sp = sel_player()
+    sp = st.session_state.get("selected_player", player_name)
     target_row_full = df[df['Player'] == sp].head(1).iloc[0]
     target_league = target_row_full['League']
 
@@ -1949,10 +1946,10 @@ else:
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
         target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-sp = sel_player()
+sp = st.session_state.get("selected_player", player_name)
 try:
     default_target_idx = target_options_cf.index(sp)
-except Exception:
+except ValueError:
     default_target_idx = 0 if target_options_cf else 0
 target_player_cf = st.selectbox(
     "Target player",
