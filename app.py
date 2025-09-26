@@ -1478,7 +1478,7 @@ with st.expander("Radar settings", expanded=False):
     try:
         pA_index = players.index(sp)
     except ValueError:
-            pA_index = 0
+        pA_index = 0
     pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
 
@@ -1761,7 +1761,7 @@ if not player_row.empty:
     )
 
     # Remove the selected player from candidates
-    df_candidates = df_candidates[df_candidates['Player'] != player_name]
+    df_candidates = df_candidates[df_candidates['Player'] != sp]
 
     # Ensure features are present and numeric
     df_candidates = df_candidates.dropna(subset=SIM_FEATURES)
