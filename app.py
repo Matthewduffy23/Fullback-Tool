@@ -1469,7 +1469,7 @@ try:
 except Exception as e:
     st.info(f"Scatter could not be drawn: {e}")
 # ----------------------------------------------------------------------
-# ----------------- (B) COMPARISON RADAR — SAME POOL, NO EXTRA TOGGLES -----------------
+# ----------------- (B) COMPARISON RADAR — A = selected player, B from selected leagues -----------------
 st.markdown("---")
 st.header("📊 Player Comparison Radar")
 
@@ -1481,9 +1481,9 @@ with st.expander("Radar settings", expanded=False):
     ]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     metrics_default = [m for m in DEFAULT_METRICS if m in df.columns]
-    radar_metrics = st.multiselect(
-        "Radar metrics", [c for c in df.columns if c in numeric_cols], metrics_default, key="rad_ms"
-    )
+    radar_metrics = st.multiselect("Radar metrics",
+                                   [c for c in df.columns if c in numeric_cols],
+                                   metrics_default, key="rad_ms")
     sort_by_gap = st.checkbox("Sort axes by biggest gap", False, key="rad_sort")
     show_avg    = st.checkbox("Show pool average (thin line)", True, key="rad_avg")
 
@@ -1495,42 +1495,58 @@ def _clean_label_r(s: str) -> str:
     s = s.replace("Accurate passes, %", "Pass %")
     return re.sub(r"\s*per\s*90", "", s, flags=re.I)
 
-# Build pool exactly like other sections (leagues/minutes/age/same_pos already applied inside)
-pool_radar = build_pool_df()
+# 1) Percentile pool = EXACTLY your sidebar pool (same leagues/minutes/age/position)
+pool_pct = build_pool_df()
 
-# Candidate list = players present in the radar pool (guarantee current selection exists)
-players_in_pool = pool_radar["Player"].dropna().tolist() if not pool_radar.empty else []
-if player_name not in players_in_pool and player_name in df["Player"].values:
-    players_in_pool = [player_name] + players_in_pool
-# Put selected player first, then others alphabetically (so defaults never jump to A-Z)
-players_in_pool = sorted(set(players_in_pool), key=lambda x: (x != player_name, x))
+# 2) Selection lists
+#    A) Player A list = the selected player (locked first) + anyone inside the percentile pool
+players_in_pct_pool = pool_pct["Player"].dropna().tolist() if isinstance(pool_pct, pd.DataFrame) and not pool_pct.empty else []
+if player_name not in players_in_pct_pool and player_name in df["Player"].values:
+    players_in_pct_pool = [player_name] + players_in_pct_pool
+players_in_pct_pool = sorted(set(players_in_pct_pool), key=lambda x: (x != player_name, x))
 
-# Defaults: A = selected player; B = next available in same pool
 try:
-    pA_idx = players_in_pool.index(player_name)
+    pA_idx = players_in_pct_pool.index(player_name)
 except ValueError:
     pA_idx = 0
-pA = st.selectbox("Player A (red)", players_in_pool, index=pA_idx, key="rad_a")
+pA = st.selectbox("Player A (red)", players_in_pct_pool, index=pA_idx, key="rad_a")
 
-pB_default = 1 if len(players_in_pool) > 1 else 0
-if pB_default == pA_idx and len(players_in_pool) > 2:
-    pB_default = 2
-pB = st.selectbox("Player B (blue)", players_in_pool, index=pB_default, key="rad_b")
+#    B) Player B list = ANY player in the **selected leagues** (not only A’s league),
+#       still respecting position filter + minutes/age sliders.
+#       If no leagues were selected, fall back to ALL leagues in the dataset.
+leagues_for_b = leagues_pool if leagues_pool else sorted(df["League"].dropna().unique().tolist())
+pool_b = df[df["League"].isin(leagues_for_b)].copy()
+if same_pos and not player_row.empty:
+    pool_b = pool_b[pool_b["Position"].astype(str).apply(position_filter)]
+# reuse minutes/age from the sidebar sliders used by build_pool_df()
+pool_b["Minutes played"] = pd.to_numeric(pool_b["Minutes played"], errors="coerce")
+pool_b["Age"] = pd.to_numeric(pool_b["Age"], errors="coerce")
+pool_b = pool_b[pool_b["Minutes played"].between(min_minutes_pool, max_minutes_pool)]
+pool_b = pool_b[pool_b["Age"].between(age_min_pool, age_max_pool)]
+b_options = sorted(pool_b["Player"].dropna().unique().tolist())
 
-# Draw radar (percentiles are computed against pool_radar)
+# Default B = first different name in that list
+if player_name in b_options and len(b_options) > 1:
+    b_options_noA = [x for x in b_options if x != player_name]
+    b_default_idx = b_options.index(b_options_noA[0]) if b_options_noA else 0
+else:
+    b_default_idx = 0 if b_options else 0
+pB = st.selectbox("Player B (blue)", b_options, index=b_default_idx, key="rad_b")
+
+# 3) Draw radar using percentiles from pool_pct
 if radar_metrics:
     try:
-        if pool_radar.empty:
+        if pool_pct is None or pool_pct.empty:
             st.info("Radar pool is empty. Add leagues or relax filters.")
         else:
-            # ensure numeric; keep rows with all selected metrics
+            # Ensure metrics are numeric & available
             for m in radar_metrics:
-                if m in pool_radar.columns:
-                    pool_radar[m] = pd.to_numeric(pool_radar[m], errors="coerce")
-            pool = pool_radar.dropna(subset=[m for m in radar_metrics if m in pool_radar.columns]).copy()
+                if m in pool_pct.columns:
+                    pool_pct[m] = pd.to_numeric(pool_pct[m], errors="coerce")
+            pool = pool_pct.dropna(subset=[m for m in radar_metrics if m in pool_pct.columns]).copy()
 
-            # Make sure A & B rows exist in the pool (append from df if filtered out)
-            def _ensure_player(pool_df, name):
+            # Make sure A & B exist in the percentile pool (append rows if needed so they can be scored)
+            def _ensure_in_pool(pool_df, name):
                 if "Player" in pool_df and (pool_df["Player"] == name).any():
                     return pool_df
                 add = df[df["Player"] == name].head(1).copy()
@@ -1539,20 +1555,20 @@ if radar_metrics:
                         add[m] = pd.to_numeric(add[m], errors="coerce")
                 return pd.concat([pool_df, add], ignore_index=True, sort=False)
 
-            pool = _ensure_player(pool, pA)
-            pool = _ensure_player(pool, pB)
+            pool = _ensure_in_pool(pool, pA)
+            pool = _ensure_in_pool(pool, pB)
             pool = pool.dropna(subset=radar_metrics)
 
             if pool.empty:
                 st.info("Selected metrics are missing for the chosen players.")
             else:
                 labels = [_clean_label_r(m) for m in radar_metrics]
-                pool_pct = pool[radar_metrics].rank(pct=True) * 100.0
+                pool_pct_vals = pool[radar_metrics].rank(pct=True) * 100.0
 
                 def pct_for(player):
                     idx = pool[pool["Player"] == player].index
                     if len(idx) == 0: return np.full(len(radar_metrics), np.nan)
-                    return pool_pct.loc[idx, :].mean(axis=0).values
+                    return pool_pct_vals.loc[idx, :].mean(axis=0).values
 
                 A_r = pct_for(pA); B_r = pct_for(pB); AVG_r = np.full(len(radar_metrics), 50.0)
 
@@ -1561,7 +1577,7 @@ if radar_metrics:
                     labels = [labels[i] for i in order]
                     A_r, B_r, AVG_r = A_r[order], B_r[order], AVG_r[order]
 
-                # cosmetic axis tick values (from pool min/max)
+                # --- cosmetic tick labels from the pool’s raw ranges ---
                 axis_min = pool[radar_metrics].min().values
                 axis_max = pool[radar_metrics].max().values
                 pad = (axis_max - axis_min) * 0.07
@@ -1629,6 +1645,7 @@ if radar_metrics:
     except Exception as e:
         st.info(f"Radar could not be drawn: {e}")
 # ----------------- END RADAR -----------------
+
 
 
 
