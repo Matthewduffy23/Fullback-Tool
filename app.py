@@ -462,16 +462,9 @@ st.pyplot(fig, use_container_width=True)
 
 
 # ----------------- SINGLE PLAYER ROLE PROFILE (REPLACED) -----------------
-# --- keep the selected player globally for other sections ---
-def sel_player():
-    # use the canonical selected value from the main selector
-    return st.session_state.get("selected_player", player_name)
-
-# store the main picker’s value once so other blocks can read it
-st.session_state["selected_player"] = player_name
-
 st.subheader("🎯 Single Player Role Profile")
 player_name = st.selectbox("Choose player", sorted(df_f["Player"].unique()))
+st.session_state["selected_player"] = player_name
 player_row = df_f[df_f["Player"] == player_name].head(1)
 
 # derive defaults from selected player (to propagate)
@@ -1477,15 +1470,13 @@ with st.expander("Radar settings", expanded=False):
         st.warning("Not enough players for this filter.")
         players = sorted(df["Player"].dropna().unique().tolist())
 
-    sp = sel_player()
-    
-sp = st.session_state.get("selected_player", player_name)
-try:
-    pA_index = players.index(sp)
-except ValueError:
-    pA_index = 0
-pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
-
+    # default Player A = selected player if present
+    sp = st.session_state.get("selected_player", player_name)
+    try:
+        pA_index = players.index(sp)
+    except ValueError:
+            pA_index = 0
+    pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
 
 
 
@@ -1946,18 +1937,17 @@ else:
         target_pool_cf = df[df['League'].isin(target_leagues_cf)]
         target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique())
-sp = st.session_state.get("selected_player", player_name)
-try:
-    default_target_idx = target_options_cf.index(sp)
-except ValueError:
-    default_target_idx = 0 if target_options_cf else 0
-target_player_cf = st.selectbox(
-    "Target player",
-    target_options_cf,
-    index=default_target_idx if target_options_cf else 0,
-    key="cf_target_player"
-)
-
+        sp = st.session_state.get("selected_player", player_name)
+        try:
+            default_target_idx = target_options_cf.index(sp)
+        except ValueError:
+            default_target_idx = 0 if target_options_cf else 0
+        target_player_cf = st.selectbox(
+            "Target player",
+            target_options_cf,
+            index=default_target_idx if target_options_cf else 0,
+            key="cf_target_player"
+        )
 
         # Minutes / age filters for candidate pool (teams built from these players)
         max_minutes_in_data_cf = int(pd.to_numeric(df.get('Minutes played', pd.Series([0])), errors='coerce').fillna(0).max())
