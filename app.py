@@ -1468,20 +1468,51 @@ with st.expander("Radar settings", expanded=False):
         age_min_r_bound, age_max_r_bound,
         (16, 40), key="rad_age"
     )
-    # Honor the current position scope string (e.g., "CF", "RW", etc.)
-    picker_pool = df[df["Position"].astype(str).str.startswith(pos_scope, na=False)].copy()
-    players = sorted(picker_pool["Player"].dropna().unique().tolist())
-    if len(players) < 2:
-        st.warning("Not enough players for this filter.")
-        players = sorted(df["Player"].dropna().unique().tolist())
+# Build the picker list but always include the selected player as default
+pos_scope = st.text_input("Position startswith (radar pool)", default_pos_prefix, key="rad_pos")
 
-    # default Player A = selected player from session (fallback to current player_name)
-    sp = st.session_state.get("selected_player", player_name)
-    try:
-        pA_index = players.index(sp)
-    except Exception:
-        pA_index = 0
-    pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
+df["Minutes played"] = pd.to_numeric(df["Minutes played"], errors="coerce")
+df["Age"]            = pd.to_numeric(df["Age"], errors="coerce")
+min_minutes_r, max_minutes_r = st.slider("Minutes filter (radar pool)", 0, 5000, (1000, 5000), key="rad_min")
+
+age_min_r_bound = int(np.nanmin(df["Age"])) if df["Age"].notna().any() else 14
+age_max_r_bound = int(np.nanmax(df["Age"])) if df["Age"].notna().any() else 45
+min_age_r, max_age_r = st.slider("Age filter (radar pool)", age_min_r_bound, age_max_r_bound, (16, 40), key="rad_age")
+
+# Use startswith on the typed position scope
+picker_pool = df.copy()
+if pos_scope:
+    picker_pool = picker_pool[picker_pool["Position"].astype(str).str.startswith(pos_scope, na=False)]
+
+players = sorted(picker_pool["Player"].dropna().unique().tolist())
+
+# Ensure the UI always defaults to the currently selected player
+selected_name = st.session_state.get("selected_player", player_name)
+if selected_name and selected_name not in players and not pd.isna(selected_name):
+    players = [selected_name] + players  # prepend, then de-dupe while keeping order
+    seen = set()
+    players = [p for p in players if not (p in seen or seen.add(p))]
+
+if len(players) < 2:
+    st.warning("Not enough players for this filter.")
+    players = sorted(df["Player"].dropna().unique().tolist())
+    if selected_name and selected_name not in players:
+        players = [selected_name] + players
+        seen = set()
+        players = [p for p in players if not (p in seen or seen.add(p))]
+
+# Defaults
+try:
+    pA_index = players.index(selected_name)
+except ValueError:
+    pA_index = 0
+
+pA = st.selectbox("Player A (red)", players, index=pA_index, key="rad_a")
+
+pB_default_index = 1 if len(players) > 1 else 0
+if pA_index == pB_default_index and len(players) > 2:
+    pB_default_index = 2
+pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
 
 
 
