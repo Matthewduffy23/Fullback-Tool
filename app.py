@@ -1507,10 +1507,10 @@ st.selectbox(
 )
 
     # default Player B = next one (or index 1)
-pB_default_index = 1 if len(players) > 1 else 0
+    pB_default_index = 1 if len(players) > 1 else 0
     if pA_index == pB_default_index and len(players) > 2:
-        pB_default_index = 2
-pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
+    pB_default_index = 2
+    pB = st.selectbox("Player B (blue)", players, index=pB_default_index, key="rad_b")
 
     DEFAULT_METRICS = [
     "Defensive duels per 90","Defensive duels won, %","PAdj Interceptions", "Aerial duels won, %",
