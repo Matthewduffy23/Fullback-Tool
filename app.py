@@ -1872,7 +1872,7 @@ else:
 
 
 
-# ---------------------------- (D) CLUB FIT — FIXED ----------------------------
+# ---------------------------- (D) CLUB FIT — FIXED (universal position_filter everywhere) ----------------------------
 st.markdown("---")
 st.header("🏟️ Club Fit Finder")
 
@@ -1948,12 +1948,10 @@ else:
         leagues_selected_cf = sorted(set(st.session_state.candidate_leagues_cf) | set(extra_candidate_leagues_cf))
         st.caption(f"Candidate pool leagues: **{len(leagues_selected_cf)}** selected.")
 
-        # Position scope (default from the selected profile's prefix)
-        pos_scope_cf = st.text_input("Position startswith (club fit)", default_pos_prefix, key="cf_pos_scope")
-
         # Target player selector — ALWAYS include the currently selected profile
         target_pool_cf = df[df['League'].isin(target_leagues_cf)].copy()
-        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)]
+        # ✅ Use the universal position_filter used elsewhere
+        target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique().tolist())
 
         sp = st.session_state.get("selected_player", player_name)
@@ -2006,11 +2004,9 @@ else:
 
     # -------------------- Compute --------------------
     if target_player_cf and (target_player_cf in df['Player'].values):
-        # Candidate player pool (position scope enforced here)
+        # Candidate player pool (✅ universal position_filter)
         df_candidates_cf = df[df['League'].isin(leagues_selected_cf)].copy()
-        df_candidates_cf = df_candidates_cf[
-            df_candidates_cf['Position'].astype(str).str.startswith(pos_scope_cf, na=False)
-        ]
+        df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).apply(position_filter)]
 
         # Numerics + filters
         df_candidates_cf['Minutes played'] = pd.to_numeric(df_candidates_cf['Minutes played'], errors='coerce')
@@ -2125,3 +2121,4 @@ else:
                             "strength_range": (int(min_strength_cf), int(max_strength_cf)),
                             "n_teams": int(results_cf.shape[0]),
                         })
+# ---------------------------- END Club Fit ----------------------------
