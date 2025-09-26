@@ -1855,7 +1855,7 @@ else:
 
 
 
-# ---------------------------- (D) CLUB FIT — FIXED (universal position_filter everywhere) ----------------------------
+# ---------------------------- (D) CLUB FIT — FIXED & SYNCED TO SELECTED PLAYER ----------------------------
 st.markdown("---")
 st.header("🏟️ Club Fit Finder")
 
@@ -1931,27 +1931,35 @@ else:
         leagues_selected_cf = sorted(set(st.session_state.candidate_leagues_cf) | set(extra_candidate_leagues_cf))
         st.caption(f"Candidate pool leagues: **{len(leagues_selected_cf)}** selected.")
 
-        # Target player selector — ALWAYS include the currently selected profile
+        # Target pool: universal position_filter (not exact position string)
         target_pool_cf = df[df['League'].isin(target_leagues_cf)].copy()
-        # ✅ Use the universal position_filter used elsewhere
         target_pool_cf = target_pool_cf[target_pool_cf['Position'].astype(str).apply(position_filter)]
         target_options_cf = sorted(target_pool_cf['Player'].dropna().unique().tolist())
 
-        sp = st.session_state.get("selected_player", player_name)
+        # -------- SYNC THE SELECTED PLAYER INTO THIS WIDGET --------
+        # Keep a canonical "selected_player" around
+        st.session_state["selected_player"] = player_name
+        sp = st.session_state["selected_player"]
+
+        # Make sure the selected player is present in options (even if filtered out)
         if sp and sp not in target_options_cf and sp in df['Player'].values:
             target_options_cf = [sp] + target_options_cf
-            # de-duplicate while preserving order
-            seen = set()
-            target_options_cf = [x for x in target_options_cf if not (x in seen or seen.add(x))]
+            seen = set(); target_options_cf = [x for x in target_options_cf if not (x in seen or seen.add(x))]
 
-        try:
-            default_target_idx = target_options_cf.index(sp) if sp in target_options_cf else 0
-        except Exception:
-            default_target_idx = 0
+        # If widget holds a stale value or a different profile is selected, force it to the new one
+        if (
+            "cf_target_player" not in st.session_state
+            or st.session_state["cf_target_player"] not in target_options_cf
+            or st.session_state.get("cf_bound_to") != sp
+        ):
+            st.session_state["cf_target_player"] = sp if sp in target_options_cf else (target_options_cf[0] if target_options_cf else None)
+            st.session_state["cf_bound_to"] = sp  # remember which profile we synced from
 
+        # Now render the selectbox (it will show the synced value)
         target_player_cf = st.selectbox(
-            "Target player", target_options_cf,
-            index=(default_target_idx if target_options_cf else 0),
+            "Target player",
+            target_options_cf,
+            index=target_options_cf.index(st.session_state["cf_target_player"]) if target_options_cf and st.session_state["cf_target_player"] in target_options_cf else 0,
             key="cf_target_player"
         )
 
@@ -1986,8 +1994,9 @@ else:
         top_n_cf = st.number_input("Show top N teams", 5, 100, 20, 5, key="cf_topn")
 
     # -------------------- Compute --------------------
-    if target_player_cf and (target_player_cf in df['Player'].values):
-        # Candidate player pool (✅ universal position_filter)
+    target_player_val = st.session_state.get("cf_target_player")
+    if target_player_val and (target_player_val in df['Player'].values):
+        # Candidate player pool (universal position_filter)
         df_candidates_cf = df[df['League'].isin(leagues_selected_cf)].copy()
         df_candidates_cf = df_candidates_cf[df_candidates_cf['Position'].astype(str).apply(position_filter)]
 
@@ -2007,25 +2016,21 @@ else:
         if df_candidates_cf.empty:
             st.info("No candidate players after filters. Widen candidate leagues or relax filters.")
         else:
-            # --- Target row is pulled DIRECTLY from df so it never disappears ---
-            target_all_rows = df[df['Player'] == target_player_cf].copy()
+            # Target row from full df (never disappears)
+            target_all_rows = df[df['Player'] == target_player_val].copy()
             if target_all_rows.empty:
                 st.info("Target player not found in dataset.")
             else:
-                # Prefer the row with most minutes
                 target_row_cf = target_all_rows.sort_values('Minutes played', ascending=False).iloc[0]
                 target_vector_cf = target_row_cf[CF_FEATURES].astype(float).values
                 target_ls_cf = float(_LS_CF.get(target_row_cf['League'], 50.0))
 
-                # Target MV (override if provided)
                 tv = pd.to_numeric(target_row_cf.get('Market value'), errors='coerce')
                 target_market_value_cf = float(manual_override_cf) if manual_override_cf and manual_override_cf > 0 \
                     else (float(tv) if pd.notna(tv) and tv > 0 else 2_000_000.0)
 
-                # Team profiles (mean of candidate players that survived filters)
                 club_profiles_cf = df_candidates_cf.groupby('Team')[CF_FEATURES].mean().reset_index()
 
-                # Team league & average team MV from same pool
                 team_league_cf = df_candidates_cf.groupby('Team')['League'].agg(
                     lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0]
                 )
@@ -2034,7 +2039,6 @@ else:
                 club_profiles_cf['Avg Team Market Value'] = club_profiles_cf['Team'].map(team_market_cf)
                 club_profiles_cf = club_profiles_cf.dropna(subset=['Avg Team Market Value'])
 
-                # Standardize & weighted distance
                 from sklearn.preprocessing import StandardScaler
                 scaler_cf = StandardScaler()
                 X_team = scaler_cf.fit_transform(club_profiles_cf[CF_FEATURES])
@@ -2046,7 +2050,6 @@ else:
                 club_fit_base = (1 - (dist_cf - float(dist_cf.min())) / (rng if rng > 0 else 1.0)) * 100.0
                 club_profiles_cf['Club Fit %'] = club_fit_base.round(2)
 
-                # League strength adjustment & filter
                 club_profiles_cf['League strength'] = club_profiles_cf['League'].map(_LS_CF).fillna(50.0)
                 club_profiles_cf = club_profiles_cf[
                     (club_profiles_cf['League strength'] >= float(min_strength_cf)) &
@@ -2061,10 +2064,9 @@ else:
                         club_profiles_cf['Club Fit %'] * (1 - league_weight_cf) +
                         club_profiles_cf['Club Fit %'] * ratio_cf * league_weight_cf
                     )
-
                     league_gap_cf = (club_profiles_cf['League strength'] - target_ls_cf).clip(lower=0)
                     penalty_cf = (1 - (league_gap_cf / 100)).clip(lower=0.7)
-                    club_profiles_cf['Adjusted Fit %'] = club_profiles_cf['Adjusted Fit %'] * penalty_cf
+                    club_profiles_cf['Adjusted Fit %'] *= penalty_cf
 
                     value_fit_ratio_cf = (club_profiles_cf['Avg Team Market Value'] / target_market_value_cf).clip(0.5, 1.5)
                     value_fit_score_cf = (1 - abs(1 - value_fit_ratio_cf)) * 100.0
@@ -2076,32 +2078,20 @@ else:
 
                     results_cf = club_profiles_cf[
                         ['Team','League','League strength','Club Fit %','Adjusted Fit %','Final Fit %']
-                    ].copy()
-                    results_cf = results_cf.sort_values('Final Fit %', ascending=False).reset_index(drop=True)
+                    ].copy().sort_values('Final Fit %', ascending=False).reset_index(drop=True)
                     results_cf.insert(0, 'Rank', np.arange(1, len(results_cf) + 1))
 
                     st.caption(
-                        f"Target: {target_player_cf} — {target_row_cf.get('Team','Unknown')} ({target_row_cf['League']}) • "
+                        f"Target: {target_player_val} — {target_row_cf.get('Team','Unknown')} ({target_row_cf['League']}) • "
                         f"Target MV used: €{target_market_value_cf:,.0f} • Target LS {target_ls_cf:.2f} • "
                         f"Candidates: {len(leagues_selected_cf)} leagues (preset: {preset_name_cf})"
                     )
                     st.dataframe(results_cf.head(int(top_n_cf)), use_container_width=True)
 
                     csv_cf = results_cf.to_csv(index=False).encode('utf-8')
-                    st.download_button("⬇️ Download all results (CSV)", data=csv_cf,
-                                       file_name="club_fit_results.csv", mime="text/csv")
+                    st.download_button("⬇️ Download all results (CSV)", data=csv_cf, file_name="club_fit_results.csv", mime="text/csv")
 
-                    with st.expander("Debug / Repro details"):
-                        st.write({
-                            "preset": preset_name_cf,
-                            "candidate_leagues_count": len(leagues_selected_cf),
-                            "target_leagues_count": len(target_leagues_cf),
-                            "league_weight": float(league_weight_cf),
-                            "market_value_weight": float(market_value_weight_cf),
-                            "target_market_value_used": float(target_market_value_cf),
-                            "minutes_range": (int(min_minutes_cf), int(max_minutes_cf)),
-                            "age_range": (int(min_age_cf), int(max_age_cf)),
-                            "strength_range": (int(min_strength_cf), int(max_strength_cf)),
-                            "n_teams": int(results_cf.shape[0]),
-                        })
+    else:
+        st.info("Pick a player to run Club Fit.")
 # ---------------------------- END Club Fit ----------------------------
+
