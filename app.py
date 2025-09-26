@@ -1469,7 +1469,7 @@ try:
 except Exception as e:
     st.info(f"Scatter could not be drawn: {e}")
 # ----------------------------------------------------------------------
-# ----------------- (B) COMPARISON RADAR — A = selected player, B from selected leagues -----------------
+# ----------------- (B) COMPARISON RADAR — A = selected player, B from ANY league (same remit) -----------------
 st.markdown("---")
 st.header("📊 Player Comparison Radar")
 
@@ -1481,9 +1481,10 @@ with st.expander("Radar settings", expanded=False):
     ]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     metrics_default = [m for m in DEFAULT_METRICS if m in df.columns]
-    radar_metrics = st.multiselect("Radar metrics",
-                                   [c for c in df.columns if c in numeric_cols],
-                                   metrics_default, key="rad_ms")
+    radar_metrics = st.multiselect(
+        "Radar metrics", [c for c in df.columns if c in numeric_cols],
+        default=metrics_default, key="rad_ms"
+    )
     sort_by_gap = st.checkbox("Sort axes by biggest gap", False, key="rad_sort")
     show_avg    = st.checkbox("Show pool average (thin line)", True, key="rad_avg")
 
@@ -1495,156 +1496,134 @@ def _clean_label_r(s: str) -> str:
     s = s.replace("Accurate passes, %", "Pass %")
     return re.sub(r"\s*per\s*90", "", s, flags=re.I)
 
-# 1) Percentile pool = EXACTLY your sidebar pool (same leagues/minutes/age/position)
-pool_pct = build_pool_df()
+# Percentile pool = EXACTLY your sidebar pool (same leagues/minutes/age/position)
+pct_pool = build_pool_df()
 
-# 2) Selection lists
-#    A) Player A list = the selected player (locked first) + anyone inside the percentile pool
-players_in_pct_pool = pool_pct["Player"].dropna().tolist() if isinstance(pool_pct, pd.DataFrame) and not pool_pct.empty else []
-if player_name not in players_in_pct_pool and player_name in df["Player"].values:
-    players_in_pct_pool = [player_name] + players_in_pct_pool
-players_in_pct_pool = sorted(set(players_in_pct_pool), key=lambda x: (x != player_name, x))
+# Player A (red) is locked to the selected player
+pA = player_name
 
-try:
-    pA_idx = players_in_pct_pool.index(player_name)
-except ValueError:
-    pA_idx = 0
-pA = st.selectbox("Player A (red)", players_in_pct_pool, index=pA_idx, key="rad_a")
-
-#    B) Player B list = ANY player in the **selected leagues** (not only A’s league),
-#       still respecting position filter + minutes/age sliders.
-#       If no leagues were selected, fall back to ALL leagues in the dataset.
-leagues_for_b = leagues_pool if leagues_pool else sorted(df["League"].dropna().unique().tolist())
-pool_b = df[df["League"].isin(leagues_for_b)].copy()
+# Player B (blue) options = ANY league by default (still respect remit: same_pos, minutes, age)
+pool_b = df.copy()
 if same_pos and not player_row.empty:
     pool_b = pool_b[pool_b["Position"].astype(str).apply(position_filter)]
-# reuse minutes/age from the sidebar sliders used by build_pool_df()
 pool_b["Minutes played"] = pd.to_numeric(pool_b["Minutes played"], errors="coerce")
 pool_b["Age"] = pd.to_numeric(pool_b["Age"], errors="coerce")
 pool_b = pool_b[pool_b["Minutes played"].between(min_minutes_pool, max_minutes_pool)]
 pool_b = pool_b[pool_b["Age"].between(age_min_pool, age_max_pool)]
 b_options = sorted(pool_b["Player"].dropna().unique().tolist())
 
-# Default B = first different name in that list
-if player_name in b_options and len(b_options) > 1:
-    b_options_noA = [x for x in b_options if x != player_name]
-    b_default_idx = b_options.index(b_options_noA[0]) if b_options_noA else 0
+# Default B = first different player in remit
+if pA in b_options and len(b_options) > 1:
+    b_default = next((x for x in b_options if x != pA), b_options[0])
 else:
-    b_default_idx = 0 if b_options else 0
-pB = st.selectbox("Player B (blue)", b_options, index=b_default_idx, key="rad_b")
+    b_default = b_options[0] if b_options else pA
+pB = st.selectbox("Player B (blue)", b_options, index=b_options.index(b_default) if b_options else 0, key="rad_b")
 
-# 3) Draw radar using percentiles from pool_pct
+# --- percentile helper (compute a player's percentile vector against pct_pool) ---
+def _pct_vec(player_name: str, metrics: list[str]) -> np.ndarray:
+    if pct_pool is None or pct_pool.empty:
+        return np.full(len(metrics), np.nan)
+    row = df[df["Player"] == player_name].head(1)
+    if row.empty:
+        return np.full(len(metrics), np.nan)
+    row = row.iloc[0]
+    out = []
+    for m in metrics:
+        if m not in pct_pool.columns or pd.isna(row.get(m)):
+            out.append(np.nan); continue
+        s = pd.to_numeric(pct_pool[m], errors="coerce").dropna()
+        if s.empty:
+            out.append(np.nan); continue
+        v = float(row[m])
+        rank = (s < v).mean() * 100.0
+        eq   = (s == v).mean() * 100.0
+        out.append(min(100.0, rank + 0.5 * eq))
+    return np.array(out, dtype=float)
+
 if radar_metrics:
     try:
-        if pool_pct is None or pool_pct.empty:
+        if pct_pool is None or pct_pool.empty:
             st.info("Radar pool is empty. Add leagues or relax filters.")
         else:
-            # Ensure metrics are numeric & available
-            for m in radar_metrics:
-                if m in pool_pct.columns:
-                    pool_pct[m] = pd.to_numeric(pool_pct[m], errors="coerce")
-            pool = pool_pct.dropna(subset=[m for m in radar_metrics if m in pool_pct.columns]).copy()
+            labels = [_clean_label_r(m) for m in radar_metrics]
+            A_r = _pct_vec(pA, radar_metrics)
+            B_r = _pct_vec(pB, radar_metrics)
+            AVG_r = np.full(len(radar_metrics), 50.0)
 
-            # Make sure A & B exist in the percentile pool (append rows if needed so they can be scored)
-            def _ensure_in_pool(pool_df, name):
-                if "Player" in pool_df and (pool_df["Player"] == name).any():
-                    return pool_df
-                add = df[df["Player"] == name].head(1).copy()
-                for m in radar_metrics:
-                    if m in add.columns:
-                        add[m] = pd.to_numeric(add[m], errors="coerce")
-                return pd.concat([pool_df, add], ignore_index=True, sort=False)
+            # Optional sort by A–B gap
+            if sort_by_gap and len(radar_metrics) > 1:
+                order = np.argsort(-np.abs(A_r - B_r))
+                labels = [labels[i] for i in order]
+                A_r, B_r, AVG_r = A_r[order], B_r[order], AVG_r[order]
 
-            pool = _ensure_in_pool(pool, pA)
-            pool = _ensure_in_pool(pool, pB)
-            pool = pool.dropna(subset=radar_metrics)
+            # Cosmetic raw-value tick bands (from pool)
+            axis_min = pct_pool[radar_metrics].apply(pd.to_numeric, errors="coerce").min().values
+            axis_max = pct_pool[radar_metrics].apply(pd.to_numeric, errors="coerce").max().values
+            pad = (axis_max - axis_min) * 0.07
+            axis_ticks = [np.linspace(axis_min[i]-pad[i], axis_max[i]+pad[i], 11) for i in range(len(labels))]
 
-            if pool.empty:
-                st.info("Selected metrics are missing for the chosen players.")
-            else:
-                labels = [_clean_label_r(m) for m in radar_metrics]
-                pool_pct_vals = pool[radar_metrics].rank(pct=True) * 100.0
+            rowA = df[df["Player"] == pA].iloc[0]; rowB = df[df["Player"] == pB].iloc[0]
 
-                def pct_for(player):
-                    idx = pool[pool["Player"] == player].index
-                    if len(idx) == 0: return np.full(len(radar_metrics), np.nan)
-                    return pool_pct_vals.loc[idx, :].mean(axis=0).values
+            # ---- draw ----
+            COL_A = "#C81E1E"; COL_B = "#1D4ED8"
+            FILL_A = (200/255, 30/255, 30/255, 0.60); FILL_B = (29/255, 78/255, 216/255, 0.60)
+            PAGE_BG = AX_BG = "#FFFFFF"; GRID_BAND_A = "#FFFFFF"; GRID_BAND_B = "#E5E7EB"
+            RING_COLOR = "#D1D5DB"; RING_LW = 1.0; LABEL_COLOR = "#0F172A"
+            TITLE_FS = 26; SUB_FS = 12; AXIS_FS = 10; TICK_FS = 7; TICK_COLOR = "#9CA3AF"; INNER_HOLE = 10
 
-                A_r = pct_for(pA); B_r = pct_for(pB); AVG_r = np.full(len(radar_metrics), 50.0)
+            N = len(labels); theta = np.linspace(0, 2*np.pi, N, endpoint=False)
+            theta_closed = np.concatenate([theta, theta[:1]])
+            Ar = np.concatenate([A_r, A_r[:1]]); Br = np.concatenate([B_r, B_r[:1]])
 
-                if sort_by_gap:
-                    order = np.argsort(-np.abs(A_r - B_r))
-                    labels = [labels[i] for i in order]
-                    A_r, B_r, AVG_r = A_r[order], B_r[order], AVG_r[order]
+            fig = plt.figure(figsize=(13.2, 8.0), dpi=260); fig.patch.set_facecolor(PAGE_BG)
+            ax = plt.subplot(111, polar=True); ax.set_facecolor(AX_BG)
+            ax.set_theta_offset(np.pi/2); ax.set_theta_direction(-1)
+            ax.set_xticks(theta); ax.set_xticklabels(labels, fontsize=AXIS_FS, color=LABEL_COLOR, fontweight=600)
+            ax.set_yticks([]); ax.grid(False); [s.set_visible(False) for s in ax.spines.values()]
 
-                # --- cosmetic tick labels from the pool’s raw ranges ---
-                axis_min = pool[radar_metrics].min().values
-                axis_max = pool[radar_metrics].max().values
-                pad = (axis_max - axis_min) * 0.07
-                axis_ticks = [np.linspace(axis_min[i]-pad[i], axis_max[i]+pad[i], 11) for i in range(len(labels))]
+            for i in range(10):
+                r0, r1 = np.linspace(INNER_HOLE,100,11)[i], np.linspace(INNER_HOLE,100,11)[i+1]
+                band = GRID_BAND_A if i % 2 == 0 else GRID_BAND_B
+                ax.add_artist(Wedge((0,0), r1, 0, 360, width=(r1-r0),
+                                    transform=ax.transData._b, facecolor=band, edgecolor="none", zorder=0.8))
+            ring_t = np.linspace(0, 2*np.pi, 361)
+            for r in np.linspace(INNER_HOLE,100,11):
+                ax.plot(ring_t, np.full_like(ring_t, r), color=RING_COLOR, lw=RING_LW, zorder=0.9)
 
-                rowA = df[df["Player"] == pA].iloc[0]; rowB = df[df["Player"] == pB].iloc[0]
+            start_idx = 2
+            for i, ang in enumerate(theta):
+                vals = axis_ticks[i][start_idx:]
+                for rr, v in zip(np.linspace(INNER_HOLE,100,11)[start_idx:], vals):
+                    ax.text(ang, rr-1.8, f"{v:.1f}", ha="center", va="center",
+                            fontsize=TICK_FS, color=TICK_COLOR, zorder=1.1)
 
-                # ---- draw ----
-                COL_A = "#C81E1E"; COL_B = "#1D4ED8"
-                FILL_A = (200/255, 30/255, 30/255, 0.60); FILL_B = (29/255, 78/255, 216/255, 0.60)
-                PAGE_BG = AX_BG = "#FFFFFF"; GRID_BAND_A = "#FFFFFF"; GRID_BAND_B = "#E5E7EB"
-                RING_COLOR = "#D1D5DB"; RING_LW = 1.0; LABEL_COLOR = "#0F172A"
-                TITLE_FS = 26; SUB_FS = 12; AXIS_FS = 10; TICK_FS = 7; TICK_COLOR = "#9CA3AF"; INNER_HOLE = 10
+            ax.add_artist(Circle((0,0), radius=INNER_HOLE-0.6, transform=ax.transData._b,
+                                 color=PAGE_BG, zorder=1.2, ec="none"))
+            if show_avg:
+                Avg = np.concatenate([AVG_r, AVG_r[:1]])
+                ax.plot(theta_closed, Avg, lw=1.5, color="#94A3B8", ls="--", alpha=0.9, zorder=2.2)
 
-                N = len(labels); theta = np.linspace(0, 2*np.pi, N, endpoint=False)
-                theta_closed = np.concatenate([theta, theta[:1]])
-                Ar = np.concatenate([A_r, A_r[:1]]); Br = np.concatenate([B_r, B_r[:1]])
+            ax.plot(theta_closed, Ar, color=COL_A, lw=2.2, zorder=3); ax.fill(theta_closed, Ar, color=FILL_A, zorder=2.5)
+            ax.plot(theta_closed, Br, color=COL_B, lw=2.2, zorder=3); ax.fill(theta_closed, Br, color=FILL_B, zorder=2.5)
+            ax.set_rlim(0, 105)
 
-                fig = plt.figure(figsize=(13.2, 8.0), dpi=260); fig.patch.set_facecolor(PAGE_BG)
-                ax = plt.subplot(111, polar=True); ax.set_facecolor(AX_BG)
-                ax.set_theta_offset(np.pi/2); ax.set_theta_direction(-1)
-                ax.set_xticks(theta); ax.set_xticklabels(labels, fontsize=AXIS_FS, color=LABEL_COLOR, fontweight=600)
-                ax.set_yticks([]); ax.grid(False); [s.set_visible(False) for s in ax.spines.values()]
+            def _mins(row):
+                v = pd.to_numeric(row.get('Minutes played', 0), errors='coerce')
+                return f"{int(v):,} mins" if pd.notna(v) else "Minutes: N/A"
 
-                for i in range(10):
-                    r0, r1 = np.linspace(INNER_HOLE,100,11)[i], np.linspace(INNER_HOLE,100,11)[i+1]
-                    band = GRID_BAND_A if i % 2 == 0 else GRID_BAND_B
-                    ax.add_artist(Wedge((0,0), r1, 0, 360, width=(r1-r0),
-                                        transform=ax.transData._b, facecolor=band, edgecolor="none", zorder=0.8))
-                ring_t = np.linspace(0, 2*np.pi, 361)
-                for r in np.linspace(INNER_HOLE,100,11):
-                    ax.plot(ring_t, np.full_like(ring_t, r), color=RING_COLOR, lw=RING_LW, zorder=0.9)
+            fig.text(0.12, 0.96,  f"{rowA['Player']}", color=COL_A, fontsize=TITLE_FS, fontweight="bold", ha="left")
+            fig.text(0.12, 0.935, f"{rowA.get('Team','?')} — {rowA.get('League','?')}", color=COL_A, fontsize=SUB_FS, ha="left")
+            fig.text(0.12, 0.915, _mins(rowA), color="#374151", fontsize=10, ha="left")
 
-                start_idx = 2
-                for i, ang in enumerate(theta):
-                    vals = axis_ticks[i][start_idx:]
-                    for rr, v in zip(np.linspace(INNER_HOLE,100,11)[start_idx:], vals):
-                        ax.text(ang, rr-1.8, f"{v:.1f}", ha="center", va="center",
-                                fontsize=TICK_FS, color=TICK_COLOR, zorder=1.1)
+            fig.text(0.88, 0.96,  f"{rowB['Player']}", color=COL_B, fontsize=TITLE_FS, fontweight="bold", ha="right")
+            fig.text(0.88, 0.935, f"{rowB.get('Team','?')} — {rowB.get('League','?')}", color=COL_B, fontsize=SUB_FS, ha="right")
+            fig.text(0.88, 0.915, _mins(rowB), color="#374151", fontsize=10, ha="right")
 
-                ax.add_artist(Circle((0,0), radius=INNER_HOLE-0.6, transform=ax.transData._b,
-                                     color=PAGE_BG, zorder=1.2, ec="none"))
-                if show_avg:
-                    Avg = np.concatenate([AVG_r, AVG_r[:1]])
-                    ax.plot(theta_closed, Avg, lw=1.5, color="#94A3B8", ls="--", alpha=0.9, zorder=2.2)
-
-                ax.plot(theta_closed, Ar, color=COL_A, lw=2.2, zorder=3); ax.fill(theta_closed, Ar, color=FILL_A, zorder=2.5)
-                ax.plot(theta_closed, Br, color=COL_B, lw=2.2, zorder=3); ax.fill(theta_closed, Br, color=FILL_B, zorder=2.5)
-                ax.set_rlim(0, 105)
-
-                def _mins(row):
-                    v = pd.to_numeric(row.get('Minutes played', 0), errors='coerce')
-                    return f"{int(v):,} mins" if pd.notna(v) else "Minutes: N/A"
-
-                fig.text(0.12, 0.96,  f"{rowA['Player']}", color=COL_A, fontsize=TITLE_FS, fontweight="bold", ha="left")
-                fig.text(0.12, 0.935, f"{rowA.get('Team','?')} — {rowA.get('League','?')}", color=COL_A, fontsize=SUB_FS, ha="left")
-                fig.text(0.12, 0.915, _mins(rowA), color="#374151", fontsize=10, ha="left")
-
-                fig.text(0.88, 0.96,  f"{rowB['Player']}", color=COL_B, fontsize=TITLE_FS, fontweight="bold", ha="right")
-                fig.text(0.88, 0.935, f"{rowB.get('Team','?')} — {rowB.get('League','?')}", color=COL_B, fontsize=SUB_FS, ha="right")
-                fig.text(0.88, 0.915, _mins(rowB), color="#374151", fontsize=10, ha="right")
-
-                st.pyplot(fig, use_container_width=True)
-
+            st.pyplot(fig, use_container_width=True)
     except Exception as e:
         st.info(f"Radar could not be drawn: {e}")
 # ----------------- END RADAR -----------------
+
 
 
 
