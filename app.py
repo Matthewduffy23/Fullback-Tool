@@ -2211,7 +2211,7 @@ DEFAULT_RADAR_METRICS = [
 def _clean_radar_label(s: str) -> str:
     s = s.replace("Aerial duels won, %", "Aerial %")
     s = s.replace("xA per 90", "xA")
-     s = s.replace("Dribbles per 90", "Dribbles")
+    s = s.replace("Dribbles per 90", "Dribbles")
     s = s.replace("Defensive duels won, %", "Defensive Duel %")
     s = s.replace("Defensive duels per 90", "Defensive Duels").replace("Passes per 90", "Passes")
     s = s.replace("Progressive runs per 90", "Progressive Runs").replace("Progressive passes per 90", "Progressive Passes")
